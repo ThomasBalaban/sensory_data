@@ -3,7 +3,7 @@ Configuration for the Context Aggregator Service.
 Subscribes to all three sense services via Hub, cleans/timestamps/fuses
 events, and emits structured context packets for the AI personality layer.
 """
-from api_keys import OPENAI_API_KEY
+from api_keys import GEMINI_API_KEY
 
 # ── Fusion window ─────────────────────────────────────────────────────────────
 # How many seconds of events to consider "the same moment"
@@ -21,7 +21,7 @@ MIC_BUFFER_SIZE      = 4
 
 # ── Classifier ────────────────────────────────────────────────────────────────
 # Model used for event classification (fast + cheap)
-CLASSIFIER_MODEL     = "gpt-4o-mini"
+CLASSIFIER_MODEL      = "gemini-2.0-flash"
 CLASSIFIER_MAX_TOKENS = 120
 
 # Only emit a classified_event if confidence >= this
