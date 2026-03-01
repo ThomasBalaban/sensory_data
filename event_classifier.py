@@ -45,7 +45,7 @@ Rules:
 - Output ONLY valid JSON. No explanation, no markdown fences.
 
 Output format:
-{"event": "EVENT_TYPE", "confidence": 0.00, "summary": "one short sentence"}"""
+{"event": "EVENT_TYPE", "confidence": 0.00, "summary": "One sentence explaining how the visual scene and the audio combine to create this moment."}"""
 
 USER_TEMPLATE = """CURRENT SENSE SNAPSHOT:
 

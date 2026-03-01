@@ -277,10 +277,6 @@ class ContextService:
             "timestamp": now_iso,
         })
 
-        self.vision_buf.clear()
-        self.audio_buf.clear()
-        self.mic_buf.clear()
-
     def _build_readable_context(self, packet: dict) -> str:
         ts   = packet["timestamp"][11:19]
         lines = [
