@@ -20,6 +20,8 @@ Hub events emitted:
     ai_context         ← single readable string for direct AI consumption
 """
 
+import threading
+import subprocess
 import os
 import signal
 import sys
@@ -32,6 +34,8 @@ from service import ContextService
 
 _service: ContextService | None = None
 
+def _run_observer():
+    subprocess.run([sys.executable, os.path.join(_THIS_DIR, "continuous_observer.py")])
 
 def _shutdown(*_):
     global _service
@@ -48,6 +52,9 @@ def main():
 
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT,  _shutdown)
+
+    observer_thread = threading.Thread(target=_run_observer, daemon=True, name="Observer")
+    observer_thread.start()
 
     _service.run()
 
