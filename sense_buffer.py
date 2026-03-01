@@ -13,12 +13,23 @@ from datetime import datetime, timezone
 class SenseEntry:
     __slots__ = ("text", "iso_ts", "unix_ts", "source")
 
-    def __init__(self, text: str, source: str, timestamp: float | None = None):
+    def __init__(self, text: str, source: str, timestamp: float | str | None = None):
         self.text    = text.strip()
-        # Use provided timestamp from the source service, or fallback to now
-        self.unix_ts = timestamp if timestamp is not None else time.time()
-        self.iso_ts  = datetime.fromtimestamp(self.unix_ts, tz=timezone.utc).isoformat(timespec="milliseconds")
         self.source  = source   # "vision" | "audio" | "mic"
+
+        # Handle the case where the Hub sends an ISO string instead of a float
+        if isinstance(timestamp, str):
+            try:
+                # Parse the ISO string to a UNIX float (replacing Z for older Python compatibility)
+                dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                self.unix_ts = dt.timestamp()
+            except ValueError:
+                self.unix_ts = time.time()
+        else:
+            # Use provided float timestamp, or fallback to now
+            self.unix_ts = timestamp if timestamp is not None else time.time()
+
+        self.iso_ts  = datetime.fromtimestamp(self.unix_ts, tz=timezone.utc).isoformat(timespec="milliseconds")
 
     def age_s(self) -> float:
         # Age is always relative to the current time of the context service
