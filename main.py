@@ -33,14 +33,33 @@ import http_control
 from service import ContextService
 
 _service: ContextService | None = None
+_observer_proc: subprocess.Popen | None = None
+
 
 def _run_observer():
-    subprocess.run([sys.executable, os.path.join(_THIS_DIR, "continuous_observer.py")])
+    global _observer_proc
+    _observer_proc = subprocess.Popen(
+        [sys.executable, os.path.join(_THIS_DIR, "continuous_observer.py")],
+        cwd=_THIS_DIR
+    )
+    _observer_proc.wait()
+
 
 def _shutdown(*_):
-    global _service
+    global _service, _observer_proc
+
+    if _observer_proc and _observer_proc.poll() is None:
+        print("🛑 Terminating observer subprocess...")
+        _observer_proc.terminate()
+        try:
+            _observer_proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            print("⚠️  Observer didn't exit cleanly — killing.")
+            _observer_proc.kill()
+
     if _service:
         _service.stop()
+
     sys.exit(0)
 
 
