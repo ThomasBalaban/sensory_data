@@ -10,25 +10,19 @@ from collections import deque
 from datetime import datetime, timezone
 
 
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
-
-
-def _now_ts() -> float:
-    return time.time()
-
-
 class SenseEntry:
     __slots__ = ("text", "iso_ts", "unix_ts", "source")
 
-    def __init__(self, text: str, source: str):
+    def __init__(self, text: str, source: str, timestamp: float | None = None):
         self.text    = text.strip()
-        self.iso_ts  = _now_iso()
-        self.unix_ts = _now_ts()
+        # Use provided timestamp from the source service, or fallback to now
+        self.unix_ts = timestamp if timestamp is not None else time.time()
+        self.iso_ts  = datetime.fromtimestamp(self.unix_ts, tz=timezone.utc).isoformat(timespec="milliseconds")
         self.source  = source   # "vision" | "audio" | "mic"
 
     def age_s(self) -> float:
-        return _now_ts() - self.unix_ts
+        # Age is always relative to the current time of the context service
+        return time.time() - self.unix_ts
 
     def formatted(self) -> str:
         """Returns a single line ready to drop into a classifier prompt."""
@@ -52,7 +46,7 @@ class SenseBuffer:
         # Deduplication: skip entries that are nearly identical to the last one
         self._last_text = ""
 
-    def add(self, text: str):
+    def add(self, text: str, timestamp: float | None = None):
         text = text.strip()
         if not text:
             return
@@ -62,7 +56,7 @@ class SenseBuffer:
             return
 
         self._last_text = text
-        self._buf.appendleft(SenseEntry(text, self.name))   # newest first
+        self._buf.appendleft(SenseEntry(text, self.name, timestamp))   # newest first
 
     def recent(self, max_age_s: float | None = None) -> list[SenseEntry]:
         """Return entries that are not stale, newest first."""

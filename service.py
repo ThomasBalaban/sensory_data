@@ -43,10 +43,7 @@ class ContextService:
         self.mic_buf    = SenseBuffer("mic",     maxlen=MIC_BUFFER_SIZE,    stale_after_s=MIC_STALE_S)
 
         # ── Event dedup state ─────────────────────────────────────────────────
-        # event_type → last emit unix_ts
         self._last_event_times: dict[str, float] = {}
-        
-        # Tracks the exact string state of the buffers to prevent redundant API calls
         self._last_classified_state = ""
 
         # ── Classifier ────────────────────────────────────────────────────────
@@ -68,12 +65,10 @@ class ContextService:
         self._register_hub_events()
 
         # ── Fusion loop control ───────────────────────────────────────────────
-        self._fusion_interval_s = FUSION_WINDOW_S / 2   # classify twice per window
+        self._fusion_interval_s = FUSION_WINDOW_S / 2
         self._fusion_thread: threading.Thread | None = None
 
         log("✅ ContextService initialized")
-
-    # ── Public ────────────────────────────────────────────────────────────────
 
     def run(self):
         self.hub_loop = asyncio.new_event_loop()
@@ -125,41 +120,44 @@ class ContextService:
         @self.sio.on("vision_context")
         async def on_vision(data):
             ctx = data.get("context", "").strip()
+            ts  = data.get("timestamp")
             if ctx:
-                self.vision_buf.add(ctx)
+                self.vision_buf.add(ctx, timestamp=ts)
                 log(f"👁️  vision: {repr(ctx[:80])}")
 
         @self.sio.on("text_update")
         async def on_text_update(data):
             ctx = data.get("content", "").strip()
+            ts  = data.get("timestamp")
             if ctx:
-                self.vision_buf.add(ctx)
+                self.vision_buf.add(ctx, timestamp=ts)
 
         # ── Desktop audio ─────────────────────────────────────────────────────
         @self.sio.on("audio_context")
         async def on_audio(data):
             ctx = data.get("context", "").strip()
             src = data.get("metadata", {}).get("source", "audio")
-            # Only take desktop audio here; mic has its own event
+            ts  = data.get("timestamp")
             if ctx and src != "microphone":
-                self.audio_buf.add(ctx)
+                self.audio_buf.add(ctx, timestamp=ts)
                 log(f"🔊 audio: {repr(ctx[:80])}")
 
         # ── Microphone ────────────────────────────────────────────────────────
         @self.sio.on("spoken_word_context")
         async def on_mic(data):
             ctx = data.get("context", "").strip()
+            ts  = data.get("timestamp")
             if ctx:
-                self.mic_buf.add(ctx)
+                self.mic_buf.add(ctx, timestamp=ts)
                 log(f"🎤 mic: {repr(ctx[:80])}")
 
-        # Also catch enriched transcripts from stream_audio_service
         @self.sio.on("transcript_enriched")
         async def on_enriched(data):
             text = data.get("text", "").strip()
             src  = data.get("speaker", "unknown")
+            ts   = data.get("timestamp")
             if text:
-                self.audio_buf.add(f"[{src}] {text}")
+                self.audio_buf.add(f"[{src}] {text}", timestamp=ts)
 
     # ── Hub helpers ───────────────────────────────────────────────────────────
 
@@ -194,13 +192,6 @@ class ContextService:
     # ── Fusion loop ───────────────────────────────────────────────────────────
 
     def _fusion_loop(self):
-        """
-        Runs on a background thread. Every `_fusion_interval_s` seconds:
-        1. Collects timestamped lines from all three buffers
-        2. Checks if there's anything worth classifying
-        3. Calls classifier
-        4. Emits structured event to hub + WS if confidence passes threshold
-        """
         log("🔄 Fusion loop active")
         while not self._shutting_down:
             t0 = time.time()
@@ -218,14 +209,12 @@ class ContextService:
         audio_lines  = self.audio_buf.formatted_lines()
         mic_lines    = self.mic_buf.formatted_lines()
 
-        # Nothing at all → skip classifier call entirely
         if not vision_lines and not audio_lines and not mic_lines:
             return
 
-        # 1. API BURNER FIX: Check if the buffer state has changed since the last tick
         current_state = str(vision_lines) + str(audio_lines) + str(mic_lines)
         if current_state == self._last_classified_state:
-            return  # State hasn't changed, save the API call!
+            return 
         
         self._last_classified_state = current_state
 
@@ -243,7 +232,6 @@ class ContextService:
             log(f"  ↳ Low confidence ({confidence:.2f}) for {event_type} — skipping")
             return
 
-        # 3. CONVERSATIONAL PRIORITY FIX: Bypass cooldowns for direct conversation
         is_conversational = event_type in ["PLAYER_SPEAKING", "CHAT_INTERACTION"]
         last_emit = self._last_event_times.get(event_type, 0)
         
@@ -254,25 +242,18 @@ class ContextService:
         self._last_event_times[event_type] = time.time()
         self._event_count += 1
 
-        # Build the clean context packet
         now_iso = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
         packet = {
-            # Classification
             "event":      event_type,
             "confidence": round(confidence, 3),
             "summary":    summary,
             "timestamp":  now_iso,
-
-            # Raw sense snapshots (timestamped, newest first)
-            # These let the personality AI understand *why* the event fired
             "context": {
                 "vision": vision_lines,
                 "audio":  audio_lines,
                 "mic":    mic_lines,
             },
-
-            # Convenience flags
             "player_speaking": bool(mic_lines and not self.mic_buf.is_stale()),
             "has_vision":      bool(vision_lines),
             "has_audio":       bool(audio_lines),
@@ -280,14 +261,9 @@ class ContextService:
 
         log(f"🎯 EVENT #{self._event_count}: {event_type} ({confidence:.2f}) — {summary}")
 
-        # Broadcast to WebSocket clients (personality AI can connect here directly)
         self.ws_server.broadcast({"type": "classified_event", **packet})
-
-        # Also push to hub so anything subscribed there gets it
         self._emit_to_hub("classified_event", packet)
 
-        # Additionally emit a clean `ai_context` event — a single
-        # human-readable string the personality AI can use as a direct prompt prefix
         readable = self._build_readable_context(packet)
         self._emit_to_hub("ai_context", {
             "context":   readable,
@@ -301,18 +277,12 @@ class ContextService:
             "timestamp": now_iso,
         })
 
-        # 2. THE "DOUBLE DIP" FIX: Flush buffers after a successful event is emitted
-        # This guarantees the old text won't stick around to trigger a different event 2 seconds later.
         self.vision_buf.clear()
         self.audio_buf.clear()
         self.mic_buf.clear()
 
     def _build_readable_context(self, packet: dict) -> str:
-        """
-        Produces a compact, human-readable context string the personality AI
-        can prepend to its system prompt or inject as a user message.
-        """
-        ts   = packet["timestamp"][11:19]  # HH:MM:SS from ISO
+        ts   = packet["timestamp"][11:19]
         lines = [
             f"[{ts}] EVENT: {packet['event']} (conf {packet['confidence']:.2f})",
             f"What's happening: {packet['summary']}",
@@ -323,7 +293,7 @@ class ContextService:
         mic    = packet["context"]["mic"]
 
         if vision:
-            lines.append(f"Screen: {vision[0]}")   # most recent
+            lines.append(f"Screen: {vision[0]}")
         if audio:
             lines.append(f"Audio:  {audio[0]}")
         lines.append(f"Player: {mic[0] if mic else '(silent)'}")
