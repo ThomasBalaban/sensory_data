@@ -45,6 +45,9 @@ class ContextService:
         # ── Event dedup state ─────────────────────────────────────────────────
         # event_type → last emit unix_ts
         self._last_event_times: dict[str, float] = {}
+        
+        # Tracks the exact string state of the buffers to prevent redundant API calls
+        self._last_classified_state = ""
 
         # ── Classifier ────────────────────────────────────────────────────────
         log("Initializing EventClassifier …")
@@ -219,6 +222,13 @@ class ContextService:
         if not vision_lines and not audio_lines and not mic_lines:
             return
 
+        # 1. API BURNER FIX: Check if the buffer state has changed since the last tick
+        current_state = str(vision_lines) + str(audio_lines) + str(mic_lines)
+        if current_state == self._last_classified_state:
+            return  # State hasn't changed, save the API call!
+        
+        self._last_classified_state = current_state
+
         self._classify_count += 1
         result = self.classifier.classify(vision_lines, audio_lines, mic_lines)
 
@@ -233,9 +243,11 @@ class ContextService:
             log(f"  ↳ Low confidence ({confidence:.2f}) for {event_type} — skipping")
             return
 
-        # Cooldown check — don't spam the same event type
+        # 3. CONVERSATIONAL PRIORITY FIX: Bypass cooldowns for direct conversation
+        is_conversational = event_type in ["PLAYER_SPEAKING", "CHAT_INTERACTION"]
         last_emit = self._last_event_times.get(event_type, 0)
-        if time.time() - last_emit < EVENT_COOLDOWN_S:
+        
+        if not is_conversational and (time.time() - last_emit < EVENT_COOLDOWN_S):
             log(f"  ↳ {event_type} on cooldown ({time.time() - last_emit:.1f}s / {EVENT_COOLDOWN_S}s)")
             return
 
@@ -289,17 +301,16 @@ class ContextService:
             "timestamp": now_iso,
         })
 
+        # 2. THE "DOUBLE DIP" FIX: Flush buffers after a successful event is emitted
+        # This guarantees the old text won't stick around to trigger a different event 2 seconds later.
+        self.vision_buf.clear()
+        self.audio_buf.clear()
+        self.mic_buf.clear()
+
     def _build_readable_context(self, packet: dict) -> str:
         """
         Produces a compact, human-readable context string the personality AI
         can prepend to its system prompt or inject as a user message.
-
-        Example output:
-            [14:03:22] EVENT: PLAYER_DEATH (conf 0.91)
-            What's happening: Character takes a critical hit and the death screen appears.
-            Screen: [14:03:21.410] vision: Health bar hit zero, death screen fading in
-            Audio:  [14:03:20.880] audio: [Narrator] "You have died."
-            Player: (silent)
         """
         ts   = packet["timestamp"][11:19]  # HH:MM:SS from ISO
         lines = [
