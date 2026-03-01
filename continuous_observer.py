@@ -10,15 +10,17 @@ OLLAMA_MODEL = "qwen2.5:32b"
 WEBSOCKET_URI = "ws://localhost:8019"
 HUB_URL = "http://localhost:8002"
 
-SYSTEM_PROMPT = """You are a highly observant, sassy AI co-host watching a live gaming stream.
-You receive a sensory snapshot every 3 seconds.
+SYSTEM_PROMPT = """You are a passive, analytical AI observer monitoring a live gaming stream. 
+You receive raw sensory snapshots containing vision (screen contents), audio (desktop sounds), and mic (streamer's voice).
 
-RULES FOR RESPONDING:
-1. If the player speaks directly to you, or says something you can riff on, RESPOND.
-2. If the player dies, gets jumpscared, or panics (e.g., saying "I'm screwed"), MOCK THEM or act shocked.
-3. Keep responses strictly under 2 sentences. Speak naturally, as if on voice chat.
-4. ESCAPE HATCH: If nothing highly entertaining, dangerous, or funny is happening, and the player is just focused or wandering, YOU MUST OUTPUT EXACTLY: <SILENCE>
-Do not explain your silence. Just output <SILENCE>."""
+YOUR GOAL: 
+Process this raw data and provide a unified, highly detailed, objective analysis of the current state of the stream. 
+
+RULES:
+1. DO NOT speak to the streamer or act like a chatbot. 
+2. Synthesize the inputs. Instead of listing "vision says this, mic says this," weave them into a coherent paragraph (e.g., "The streamer is looking at X while saying Y").
+3. Capture the emotional tone, the specific game state, and any chat interactions occurring.
+4. ESCAPE HATCH: If the current snapshot is identical in meaning to the previous few seconds (e.g., just standing in a hallway in silence), output EXACTLY: <SILENCE>"""
 
 class ContinuousObserver:
     def __init__(self):
@@ -27,14 +29,12 @@ class ContinuousObserver:
         print(f"🧠 Initializing Qwen Observer ({OLLAMA_MODEL})...")
 
     async def connect(self):
-        # Connect to the Hub to send responses back to the UI
         try:
             await self.sio.connect(HUB_URL)
             print("✅ Connected to Hub!")
         except Exception as e:
             print(f"⚠️ Could not connect to Hub: {e}")
 
-        # Connect to the local WebSocket to receive sensory data
         while True:
             try:
                 print(f"🔌 Connecting to {WEBSOCKET_URI}...")
@@ -72,23 +72,23 @@ class ContinuousObserver:
                 None,
                 lambda: ollama.generate(
                     model=OLLAMA_MODEL,
-                    prompt=f"{SYSTEM_PROMPT}\n\n{context_string}\n\nYOUR RESPONSE:",
-                    options={"temperature": 0.7, "num_predict": 60}
+                    prompt=f"{SYSTEM_PROMPT}\n\n{context_string}\n\nANALYSIS:",
+                    options={
+                        "temperature": 0.3,   # Lower temperature for objective analysis
+                        "num_predict": 150    # Give it enough tokens to write a detailed summary
+                    }
                 )
             )
 
             reply = response.get("response", "").strip()
 
             if reply == "<SILENCE>" or not reply:
-                # Tell the UI we decided to stay silent
                 if self.sio.connected:
                     await self.sio.emit("ai_response", {"text": "<SILENCE>", "timestamp": datetime.now().isoformat()})
             else:
-                # The AI decided to speak!
                 time_now = datetime.now().strftime("%H:%M:%S")
-                print(f"\n[{time_now}] 🎙️ AI: {reply}")
+                print(f"\n[{time_now}] 📊 ANALYSIS: {reply}")
                 
-                # Send the spoken text back to the UI
                 if self.sio.connected:
                     await self.sio.emit("ai_response", {"text": reply, "timestamp": datetime.now().isoformat()})
                 
